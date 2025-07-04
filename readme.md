@@ -1,5 +1,5 @@
 # Paper RAG: Análise Multimodal de Documentos PDF
-![image.png](attachment:image.png)
+![](image.png)
 Este projeto implementa um sistema de RAG (Retrieval-Augmented Generation) multimodal capaz de analisar e responder a perguntas sobre o conteúdo de arquivos PDF, incluindo textos e imagens.
 
 ## Arquitetura e Decisões Técnicas
