@@ -3,7 +3,8 @@ from IPython.display import Image, display
 from unstructured.partition.pdf import partition_pdf
 from langchain.schema.document import Document
 import uuid
-from langchain.vectorstores import Chroma
+from langchain_chroma import Chroma
+from langchain.storage import LocalFileStore
 from langchain.retrievers.multi_vector import MultiVectorRetriever
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
@@ -70,112 +71,101 @@ def summarize_elements(elements, model):
 def summarize_images(images, model):
     """
     Summarizes a list of images using a multimodal language model.
+    Processes in batches of 2 with a 30-second pause between batches.
     """
-    prompt_template = """Descreva a imagem em detalhes. Para contexto,
-    a imagem faz parte de um artigo de pesquisa que explica a arquitetura de transformers.
-    Seja específico em relação aos gráficos, como gráficos de barras."""
-    messages = [
-        (
-            "user",
-            [
-                {"type": "text", "text": prompt_template},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/jpeg;base64,{image}"},
-                },
-            ],
-        )
-    ]
-    prompt = ChatPromptTemplate.from_messages(messages)
-    chain = prompt | model | StrOutputParser()
-    # run in batchs of 2 and then put a sleep of 15 seconds 
+    prompt_text = (
+        "Descreva a imagem em detalhes. Para contexto, "
+        "a imagem faz parte de um artigo de pesquisa que explica a arquitetura de transformers. "
+        "Seja específico em relação aos gráficos, como gráficos de barras."
+    )
+
+    results = []
+
     for i in tqdm(range(0, len(images), 2)):
         batch = images[i:i + 2]
-        summaries = chain.batch(batch, {"max_concurrency": 3})
-        for summary in summaries:
-            print(summary)
-        if i + 2 < len(images):
-            import time
-            time.sleep(30)
-            
-    return summaries
+        batch_summaries = []
 
+        for image_base64 in batch:
+            messages = [
+                ("user", [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
+                ])
+            ]
+            prompt = ChatPromptTemplate.from_messages(messages)
+            chain = prompt | model | StrOutputParser()
+
+            try:
+                summary = chain.invoke({})
+                print(summary)
+                batch_summaries.append(summary)
+            except Exception as e:
+                print(f"Error processing image: {e}")
+                batch_summaries.append("Erro ao processar a imagem.")
+
+        results.extend(batch_summaries)
+
+        
+        import time
+        time.sleep(30) 
+
+    return results
 
 def create_retriever(
-    vectorstore_collection_name="multi_modal_rag_summaries",
-    docstore_collection_name="multi_modal_rag_documents",
+    collection_name="multi_modal_rag",
     persist_directory="./indexes/chroma_db",
+    docstore_path="./indexes/docstore",
 ):
     """
-    Creates a multi-vector retriever.
-    The vectorstore (Chroma) stores the summaries.
-    The docstore (also Chroma) stores the raw documents.
+    Creates a persistent multi-vector retriever.
     """
-    # Create two Chroma vector stores
     vectorstore = Chroma(
-        collection_name=vectorstore_collection_name,
+        collection_name=collection_name,
         embedding_function=OpenAIEmbeddings(),
         persist_directory=persist_directory,
     )
-    docstore = Chroma(
-        collection_name=docstore_collection_name,
-        embedding_function=OpenAIEmbeddings(), # docstore needs an embedding function too
-        persist_directory=persist_directory,
-    )
-    id_key = "doc_id"
 
-    # The retriever will fetch summaries from the vectorstore...
     retriever = MultiVectorRetriever(
         vectorstore=vectorstore,
-        # ...and use the doc_ids to fetch the original documents from the docstore
-        docstore=docstore,
-        id_key=id_key,
+        byte_store=LocalFileStore(docstore_path),  # persistent docstore
+        id_key="doc_id",
     )
+
     return retriever
 
 
+import uuid
+
 def add_documents_to_retriever(retriever, docs, summaries):
     """
-    Adds documents and their summaries to the retriever's stores.
+    Adds documents and their summaries to the retriever.
     """
     doc_ids = [str(uuid.uuid4()) for _ in docs]
 
-    # Add summaries to the vectorstore
-    summary_docs = [
-        Document(page_content=summary, metadata={retriever.id_key: doc_ids[i]})
+    # Adiciona os summaries ao vectorstore
+    summary_texts = [
+        Document(page_content=summary, metadata={"doc_id": doc_ids[i]})
         for i, summary in enumerate(summaries)
     ]
-    retriever.vectorstore.add_documents(summary_docs)
+    retriever.vectorstore.add_documents(summary_texts)
 
-    # Add original documents to the docstore
-    # We need to convert the raw text/image content to Document objects
-    original_docs = []
-    for i, doc_content in enumerate(docs):
-        # Check if the content is an image (base64) or text
-        if isinstance(doc_content, str) and doc_content.startswith('iVBOR') or len(doc_content) > 1000:
-             # It's likely a base64 image
-             doc = Document(page_content=doc_content, metadata={retriever.id_key: doc_ids[i]})
-        elif hasattr(doc_content, 'text'): # For unstructured elements
-             doc = Document(page_content=doc_content.text, metadata={retriever.id_key: doc_ids[i]})
-        else: # Plain text
-             doc = Document(page_content=str(doc_content), metadata={retriever.id_key: doc_ids[i]})
-        original_docs.append(doc)
+    # Converte os docs para instâncias de Document
+    doc_objects = [
+        Document(page_content=docs[i], metadata={"doc_id": doc_ids[i]})
+        for i in range(len(docs))
+    ]
+    retriever.docstore.mset(list(zip(doc_ids, doc_objects)))
 
-    retriever.docstore.add_documents(original_docs)
 
 def parse_docs(docs):
     """Split base64-encoded images and texts"""
     b64 = []
     text = []
     for doc in docs:
-        try:
-            # This is a hacky way to check if the doc is a base64 string
-            if len(doc) > 1000 and doc.endswith('='):
-                b64.append(doc)
-            else:
-                text.append(doc)
-        except Exception as e:
-            text.append(doc)
+        if doc.metadata.get("source") == "image":
+            b64.append(doc.page_content)
+        else:
+            text.append(doc.page_content)
     return {"images": b64, "texts": text}
 
 
@@ -188,8 +178,8 @@ def build_prompt(kwargs):
 
     context_text = ""
     if len(docs_by_type["texts"]) > 0:
-        for text_element in docs_by_type["texts"]:
-            context_text += text_element.page_content
+        context_text = "\n\n".join(docs_by_type["texts"])
+
 
     prompt_template = f"""
     Responda à pergunta com base apenas no seguinte contexto, que pode incluir texto e a imagem abaixo.

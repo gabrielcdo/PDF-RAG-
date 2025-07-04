@@ -15,7 +15,7 @@ A solução foi desenhada para lidar com a natureza complexa e multimodal de doc
 
 - **Decisão:** Adotar uma abordagem de *Multi-vector Retriever*, onde, em vez de vetorizar os chunks brutos, resumos de cada chunk (seja texto ou imagem) são gerados e vetorizados.
 - **Justificativa:** Resumos são mais densos em informação e capturam a essência do conteúdo original. Vetorizar resumos permite que a busca semântica seja mais precisa, focando nos conceitos-chave em vez de se perder em detalhes.
-    - **Textos:** O modelo `gpt-4o-mini` foi usado para gerar resumos concisos dos trechos de texto e tabelas.
+    - **Textos:** O modelo `gpt-4o-mini` foi usado para gerar resumos concisos dos trechos de texto e .
     - **Imagens:** O mesmo modelo, em seu modo multimodal, foi empregado para gerar descrições detalhadas das imagens, transformando o conteúdo visual em texto pesquisável.
 
 ### 3. Armazenamento e Indexação Vetorial (`ChromaDB`)
